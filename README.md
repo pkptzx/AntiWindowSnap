@@ -1,5 +1,10 @@
 <h1 align="center" style="border-bottom: none"> 
-    AntiWindowSnap</br>
+    AntiWindowSnap<a href="https://github.com/ayangweb/EcoPaste/releases/latest">
+      <img
+        alt="Windows"
+        src="https://img.shields.io/badge/-Windows-blue?style=flat-square&logo=windows&logoColor=white"
+      />
+    </a></br>
 </h1>
 
 <p align="center">
