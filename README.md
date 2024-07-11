@@ -15,10 +15,16 @@
 
 `AntiWindowSnap` Prevent screenshotting and screen recording for the window with the specified title.
 
+
+
 ## Usage
 1. Create a config.txt file next to AntiWindowSnap.exe. 
 2. In config.txt, list one window title per line. 
 3. Double-click to run AntiWindowSnap.exe.
+
+<picture>
+  <img src="./AntiWindowSnap.png" />
+</picture>
 
 ## Why AntiWindowSnap?
 - No DLL injection, no administrator rights are required, and only code injection is used to implement anti-screenshot api calls
