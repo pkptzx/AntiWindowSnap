@@ -1,20 +1,42 @@
-use std::{ffi::c_void, fs::File, io::{BufRead, BufReader}};
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use std::{
+    ffi::{c_void, OsStr, OsString},
+    fs::File,
+    io::{BufRead, BufReader},
+    os::windows::process::CommandExt,
+};
 
 use anti_window_snap::anti_window;
 use dashmap::DashMap;
+use fltk::{app::Scheme, enums::Align};
+use fltk::enums::{Color, Event};
+use fltk::image::PngImage;
+use fltk::input::Input;
+use fltk::{app, enums, prelude::*, window::Window};
+use fltk::{button, dialog, frame, group, input, text};
 use once_cell::sync::Lazy;
 use windows::{
     core::w,
     Win32::{
-        Foundation::{BOOL, HWND},
+        Foundation::{BOOL, COLORREF, HWND, POINT},
+        Graphics::Gdi::{
+            CreatePen, DeleteObject, GetStockObject, GetWindowDC, Rectangle, ReleaseDC,
+            SelectObject, SetROP2, NULL_BRUSH, PS_INSIDEFRAME, R2_NOT,
+        },
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
             Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
             WindowsAndMessaging::{
-                DispatchMessageW, EnumWindows, GetMessageW, GetParent, GetWindowLongPtrW, GetWindowTextW, TranslateMessage, CHILDID_SELF, EVENT_OBJECT_CREATE, EVENT_OBJECT_NAMECHANGE, GWL_STYLE, MSG, OBJID_WINDOW, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNTHREAD, WS_CHILD
+                EnumWindows, GetParent, GetPhysicalCursorPos, GetWindowLongPtrW, GetWindowTextW,
+                LoadCursorW, SetCursor, WindowFromPhysicalPoint, CHILDID_SELF, EVENT_OBJECT_CREATE,
+                EVENT_OBJECT_NAMECHANGE, GWL_STYLE, OBJID_WINDOW, WINDOW_STYLE,
+                WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNTHREAD, WS_CHILD,
             },
         },
     },
 };
+mod helper;
+
 #[derive(Debug, PartialEq, Eq)]
 enum STATE {
     UnProcessed,
@@ -23,10 +45,10 @@ enum STATE {
     Completed,
 }
 
-// 内容: key: 窗口句柄, value: (创建时是否处理, 名称改变时是否处理) 处理状态:None未处理,false在处理,true已处理
 static mut WINDOW_CACHE: Lazy<DashMap<u64, (STATE, STATE)>> = Lazy::new(|| initialize_map());
 static mut ROOT_WINDOW_CACHE: Lazy<DashMap<u64, bool>> = Lazy::new(|| initialize_root_window_map());
 static mut CONFIG_WINDOW_TITLES: Vec<String> = Vec::new();
+static mut LABELS_CACHE: Lazy<DashMap<String, frame::Frame>> = Lazy::new(|| initialize_tips_map());
 
 fn initialize_map() -> DashMap<u64, (STATE, STATE)> {
     DashMap::new()
@@ -35,34 +57,123 @@ fn initialize_root_window_map() -> DashMap<u64, bool> {
     DashMap::new()
 }
 
+fn initialize_tips_map() -> DashMap<String, frame::Frame> {
+    DashMap::new()
+}
+
 fn main() {
-
-    unsafe { windows::Win32::System::Console::SetConsoleTitleW(w!("防截屏工具")).unwrap(); };
-
-    let path = std::env::current_dir().unwrap_or_default().join("config.txt");
-
+    let path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("config.txt");
+    let mut txt_buf = text::TextBuffer::default();
     if path.exists() {
         let file = File::open(path).unwrap();
         let reader = BufReader::new(file);
-    
+
         for line_result in reader.lines() {
             let line = line_result.unwrap();
-            if !line.trim().is_empty() {          
+            if !line.trim().is_empty() {
                 unsafe {
-                    println!("已加载配置:{}", line);
-                    CONFIG_WINDOW_TITLES.push(line);
+                    // println!("已加载配置:{}", line);
+                    CONFIG_WINDOW_TITLES.push(line.clone());
+                    txt_buf.append((line + "\n").as_str());
                 }
             };
-            
-        }        
-    }else {
-        unsafe {
-            println!("您可以在当前目录下创建配置文件: config.txt");
-            println!("然后按照一行一个窗口标题来添加配置项");
-            CONFIG_WINDOW_TITLES.push("无标题 - 记事本".to_string());
         }
     }
-    
+
+    let app = app::App::default().with_scheme(Scheme::Gtk);
+    let mut wind = Window::default().with_size(640, 380).center_screen();
+
+    let mut col = group::Flex::default_fill().column();
+    let mut mp = group::Flex::default().row();
+    frame::Frame::default();
+
+    let mut left_panel_layout = group::Flex::default().column();
+
+    let mut tip1_label = frame::Frame::default()
+        .with_label("窗口标题一行一个")
+        .with_align(enums::Align::Inside | enums::Align::Left);
+    tip1_label.set_label_color(Color::Red);
+    let mut txt = text::TextEditor::default().with_size(190, 290);
+    txt.set_buffer(txt_buf.clone());
+    txt.set_text_color(Color::DarkGreen);
+    txt.set_scrollbar_align(Align::Right);
+
+    let mut brow = group::Flex::default().row();
+    {
+        frame::Frame::default();
+        let tip2_label = frame::Frame::default()
+            .with_label("保存位置config.txt")
+            .with_align(enums::Align::Inside | enums::Align::Left);
+        let mut save = create_button("保存");
+        save.set_callback(move |_| {
+            let path = std::env::current_dir()
+                .unwrap_or_default()
+                .join("config.txt");
+            match txt_buf.clone().save_file(path) {
+                Ok(_) => {
+                    unsafe {
+                        CONFIG_WINDOW_TITLES.clear();
+                    }
+                    let content = txt_buf.text();
+                    for line in content.lines() {
+                        if !line.trim().is_empty() {
+                            unsafe {
+                                CONFIG_WINDOW_TITLES.push(line.to_string());
+                            }
+                        };
+                    }
+                    do_allwindow();
+                }
+                Err(_) => {
+                    dialog::message_default("保存失败");
+                }
+            }
+        });
+        brow.fixed(&tip2_label, 120);
+        brow.fixed(&save, 60);
+        brow.end();
+    }
+    left_panel_layout.fixed(&tip1_label, 30);
+    left_panel_layout.fixed(&txt, 300);
+    left_panel_layout.fixed(&brow, 30);
+    left_panel_layout.end();
+
+    let spacer = frame::Frame::default();
+
+    let mut right_panel_layout = group::Flex::default().column();
+    right_panel(&mut right_panel_layout);
+    right_panel_layout.end();
+
+    frame::Frame::default();
+    mp.fixed(&left_panel_layout, 300);
+    mp.fixed(&spacer, 10);
+    mp.fixed(&right_panel_layout, 300);
+    frame::Frame::default();
+    mp.end();
+    frame::Frame::default();
+    col.fixed(&mp, 500);
+
+    col.end();
+    // wind.resizable(&col);
+    wind.set_color(enums::Color::from_rgb(250, 250, 250));
+    wind.end();
+
+    // wind.size_range(600, 400, 1024, 768);
+
+    wind.show();
+    helper::set_window_deny_capture(wind.raw_handle() as _, true);
+    let image = PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
+    wind.set_icon(Some(image));
+    wind.set_label(
+        format!(
+            "{} {}",
+            wind.raw_handle() as u64,
+            "  开源地址:github.com/pkptzx/AntiWindowSnap"
+        )
+        .as_str(),
+    );
 
     do_allwindow();
 
@@ -77,32 +188,47 @@ fn main() {
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNTHREAD,
         )
     };
-    // Make sure the hook is installed; a real application would want to do more
-    // elaborate error handling
     assert!(!hook.is_invalid(), "Failed to install hook");
 
-    // Have the system spin up a message loop (and get a convenient way to exit
-    // the application for free)
-    // let _ = unsafe { MessageBoxW(None, w!("点击'确定'退出程序"), w!("运行中"), MB_OK) };
-
-    let mut msg: MSG = MSG::default();
-    unsafe {
-        while GetMessageW(&mut msg, None, 0, 0).as_bool()
-        {
-            TranslateMessage(&msg).as_bool();
-            DispatchMessageW(&msg);
+    wind.set_callback(move |_| {
+        if fltk::app::event() == fltk::enums::Event::Close {
+            dialog::message_title("想好了?");
+            let choice = dialog::choice2_default(
+                "退出是不会取消已经设置过防截屏的窗口状态",
+                "取消",
+                "臣退了",
+                "开源地址:github.com/pkptzx/AntiWindowSnap",
+            );
+            if !choice.is_none() && choice.unwrap() == 1 {
+                unsafe {
+                    let _ = UnhookWinEvent(hook);
+                }
+                app::quit();
+            } else if !choice.is_none() && choice.unwrap() == 2 {
+                let mut cmd = std::process::Command::new("cmd");
+                cmd.arg("/c")
+                    .arg("start")
+                    .raw_arg("\"\"")
+                    // .raw_arg(wrap_in_quotes(app.into()))
+                    .raw_arg(wrap_in_quotes("https://github.com/pkptzx/AntiWindowSnap"))
+                    .creation_flags(0x08000000);
+                cmd.status().unwrap();
+            }
         }
-    }
-
-
-    // let mut buff = String::new();
-    // std::io::stdin().read_line(&mut buff).unwrap();
+    });
+    app.run().unwrap();
 
     unsafe {
         let _ = UnhookWinEvent(hook);
     }
 }
+fn wrap_in_quotes<T: AsRef<OsStr>>(path: T) -> OsString {
+    let mut result = OsString::from("\"");
+    result.push(path);
+    result.push("\"");
 
+    result
+}
 unsafe extern "system" fn win_event_hook_callback(
     _hook_handle: HWINEVENTHOOK,
     _event_id: u32,
@@ -132,8 +258,11 @@ unsafe extern "system" fn win_event_hook_callback(
             std::thread::spawn(move || unsafe {
                 let title = get_window_title(hwnd);
                 if CONFIG_WINDOW_TITLES.contains(&title) {
-                    anti_window(hwnd,true);
-                    println!("************************已经设置窗口防截屏:{}", title);
+                    if anti_window(hwnd, true) {
+                        println!("************************已经设置窗口防截屏:{}", title);
+                    } else {
+                        println!("设置窗口防截屏失败,32位应用暂时不支持:{}", title);
+                    }
                 }
                 let mut val = WINDOW_CACHE.get_mut(&hwnd).unwrap();
                 val.0 = STATE::Processed;
@@ -158,8 +287,11 @@ unsafe extern "system" fn win_event_hook_callback(
                 let title = get_window_title(hwnd);
                 let mut val = WINDOW_CACHE.get_mut(&hwnd).unwrap();
                 if CONFIG_WINDOW_TITLES.contains(&title) {
-                    anti_window(hwnd,true);
-                    println!("************************已经设置窗口防截屏:{}", title);
+                    if anti_window(hwnd, true) {
+                        println!("************************已经设置窗口防截屏:{}", title);
+                    } else {
+                        println!("设置窗口防截屏失败,32位应用暂时不支持:{}", title);
+                    }
                     val.1 = STATE::Completed;
                 } else {
                     val.1 = STATE::Processed;
@@ -172,8 +304,11 @@ unsafe extern "system" fn win_event_hook_callback(
                     let title = get_window_title(hwnd);
                     let mut val = WINDOW_CACHE.get_mut(&hwnd).unwrap();
                     if CONFIG_WINDOW_TITLES.contains(&title) {
-                        anti_window(hwnd,true);
-                        println!("************************已经设置窗口防截屏:{}", title);
+                        if anti_window(hwnd, true) {
+                            println!("************************已经设置窗口防截屏:{}", title);
+                        } else {
+                            println!("设置窗口防截屏失败,32位应用暂时不支持:{}", title);
+                        }
                         val.1 = STATE::Completed;
                     } else {
                         val.1 = STATE::Processed;
@@ -230,8 +365,13 @@ unsafe extern "system" fn enum_window_callback(
     std::thread::spawn(move || unsafe {
         let title = get_window_title(hwnd);
         if CONFIG_WINDOW_TITLES.contains(&title) {
-            anti_window(hwnd,true);
-            println!("************************已经设置窗口防截屏:{}", title);
+            if anti_window(hwnd, true) {
+                println!("************************已经设置窗口防截屏:{}", title);
+                set_tip(format!("已经设置窗口防截屏:{}", title));
+            } else {
+                println!("设置窗口防截屏失败,32位应用暂时不支持:{}", title);
+                set_tip(format!("32位应用暂时不支持:{}", title));
+            }
         }
         let mut val = WINDOW_CACHE.get_mut(&hwnd).unwrap();
         val.0 = STATE::Processed;
@@ -240,7 +380,300 @@ unsafe extern "system" fn enum_window_callback(
 }
 fn do_allwindow() {
     unsafe {
+        WINDOW_CACHE.clear();
         let lparam = windows::Win32::Foundation::LPARAM(8888);
         EnumWindows(Some(enum_window_callback), lparam).unwrap();
     }
+}
+fn set_tip(txt: String){
+    let mut tip = unsafe {LABELS_CACHE.get_mut("tips").unwrap()};
+            let tip_lab = tip.label();
+            let lines:Vec<&str> = tip_lab.split("\n").collect();
+            let last_line = lines.last().unwrap();
+            let last_line = if last_line.is_empty() {
+                ""
+            }else{
+                last_line
+            };
+            let tips = format!("{}\n{}", last_line, txt);
+            tip.set_label(tips.as_str());
+            tip.redraw_label();
+            tip.parent().unwrap().redraw();
+}
+fn right_panel(parent: &mut group::Flex) {
+    // frame::Frame::default();
+    let mut sqq = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("窗口拾取器:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+
+        let mut img = frame::Frame::default().with_size(42, 42);
+        // img.set_frame(FrameType::EngravedBox);
+
+        let mut image = PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
+        image.scale(42, 42, true, true);
+
+        img.set_image(Some(image));
+        img.handle(|me, event| match event {
+            Event::Push => {
+                let mut image =
+                    PngImage::from_data(&helper::load_icon_to_png("IDI_2").unwrap()).unwrap();
+                image.scale(42, 42, true, true);
+                me.set_image(Some(image));
+                me.redraw();
+                unsafe {
+                    let h_module = GetModuleHandleW(None).unwrap();
+                    let hcursor = LoadCursorW(h_module, w!("IDC_C_CURSOR")).unwrap();
+                    // println!("hcursor: {:?}", hcursor);
+                    SetCursor(hcursor);
+                }
+                true
+            }
+            Event::Released => {
+                let mut image =
+                    PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
+                image.scale(42, 42, true, true);
+                me.set_image(Some(image));
+                me.redraw();
+                true
+            }
+            Event::Drag => {
+                unsafe {
+                    let mut point2 = POINT::default();
+                    GetPhysicalCursorPos(&mut point2).unwrap();
+                    // println!("GetPhysicalCursorPos: {:?}", point2);
+
+                    let hwnd = WindowFromPhysicalPoint(point2);
+                    // println!("hwnd: {:?}", hwnd);
+                    if !hwnd.is_invalid() {
+                        let window_info = helper::get_window_info(hwnd.0 as _);
+                        // println!("hwnd: {:?} window_info: {:?}", hwnd, window_info);
+                        let hdc = GetWindowDC(hwnd);
+                        SetROP2(hdc, R2_NOT); // 返回0失败
+                        let pen = CreatePen(PS_INSIDEFRAME, 3, COLORREF(0x00000000));
+                        let h_old_pen = SelectObject(hdc, pen);
+                        let h_old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                        let width = window_info.rect.right - window_info.rect.left;
+                        let height = window_info.rect.bottom - window_info.rect.top;
+                        Rectangle(hdc, 0, 0, width, height).as_bool();
+                        SelectObject(hdc, h_old_brush);
+                        SelectObject(hdc, h_old_pen);
+                        ReleaseDC(hwnd, hdc);
+                        DeleteObject(pen).as_bool();
+                        let group = me.parent().unwrap().parent().unwrap();
+                        let mut win_title: Input = group
+                            .child(1)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_title.set_value(&window_info.text);
+
+                        let mut win_hwnd: Input = group
+                            .child(2)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_hwnd.set_value(&window_info.hwnd.to_string());
+
+                        let mut win_class_name: Input = group
+                            .child(3)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_class_name.set_value(&window_info.class_name);
+
+                        let mut win_style: Input = group
+                            .child(4)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_style.set_value(&window_info.style.to_string());
+
+                        let mut win_exstyle: Input = group
+                            .child(5)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_exstyle.set_value(&window_info.ex_style.to_string());
+
+                        let mut win_parent_title: Input = group
+                            .child(6)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_parent_title.set_value(&window_info.parent_text);
+
+                        let mut win_parent_hwnd: Input = group
+                            .child(7)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_parent_hwnd.set_value(&window_info.parent_hwnd.to_string());
+
+                        let mut win_parent_class_name: Input = group
+                            .child(8)
+                            .unwrap()
+                            .as_group()
+                            .unwrap()
+                            .child(1)
+                            .unwrap()
+                            .into_widget();
+                        win_parent_class_name.set_value(&window_info.parent_class_name);
+                    }
+                }
+                true
+            }
+            _ => false,
+        });
+        sqq.fixed(&img, 43);
+        sqq.end();
+    }
+
+    let mut urow = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("窗口标题:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_win_title = input::Input::default();
+        inp_win_title.set_readonly(true);
+        urow.fixed(&inp_win_title, 180);
+        urow.end();
+    }
+
+    let mut prow = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("窗口句柄:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_win_hwnd = input::Input::default();
+        inp_win_hwnd.set_readonly(true);
+        prow.fixed(&inp_win_hwnd, 180);
+        prow.end();
+    }
+    let mut row3 = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("窗口类名:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_win_class_name = input::Input::default();
+        inp_win_class_name.set_readonly(true);
+
+        row3.fixed(&inp_win_class_name, 180);
+        row3.end();
+    }
+    let mut row4 = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("窗口样式:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_win_style = input::Input::default();
+        inp_win_style.set_readonly(true);
+
+        row4.fixed(&inp_win_style, 180);
+        row4.end();
+    }
+    let mut row5 = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("扩展样式:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_win_exstyle = input::Input::default();
+        inp_win_exstyle.set_readonly(true);
+
+        row5.fixed(&inp_win_exstyle, 180);
+        row5.end();
+    }
+    let mut row6 = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("父窗口标题:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_parent_win_title = input::Input::default();
+        inp_parent_win_title.set_readonly(true);
+
+        row6.fixed(&inp_parent_win_title, 180);
+        row6.end();
+    }
+    let mut row7 = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("父窗口句柄:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        let mut inp_parent_win_hwnd = input::Input::default();
+        inp_parent_win_hwnd.set_readonly(true);
+
+        row7.fixed(&inp_parent_win_hwnd, 180);
+        row7.end();
+    }
+    let mut row8 = group::Flex::default().row();
+    {
+        frame::Frame::default()
+            .with_label("父窗口类名:")
+            .with_align(enums::Align::Inside | enums::Align::Right);
+        
+        let mut inp_parent_win_class_name = input::Input::default();
+        inp_parent_win_class_name.set_readonly(true);
+
+        row8.fixed(&inp_parent_win_class_name, 180);
+        row8.end();
+    }
+    let mut row9 = group::Flex::default().row();
+    {
+        let mut tip = frame::Frame::default()
+            .with_label("https://github.com/pkptzx/AntiWindowSnap")
+            .with_align(enums::Align::Inside | enums::Align::Left);
+        tip.set_label_color(Color::Blue);
+        row9.fixed(&tip, 180);
+        unsafe {
+            LABELS_CACHE.insert("tips".to_string(), tip);
+        }
+        row9.end();
+    }
+
+    let pad = frame::Frame::default();
+
+    frame::Frame::default();
+
+    parent.fixed(&sqq, 43);
+    parent.fixed(&urow, 30);
+    parent.fixed(&prow, 30);
+    parent.fixed(&row3, 30);
+    parent.fixed(&row4, 30);
+    parent.fixed(&row5, 30);
+    parent.fixed(&row6, 30);
+    parent.fixed(&row7, 30);
+    parent.fixed(&row8, 30);
+    parent.fixed(&row9, 60);
+
+    parent.fixed(&pad, 1); //空
+                           // parent.fixed(&brow, 30); //按钮
+                           // parent.fixed(&b, 30); //底部
+}
+
+fn create_button(caption: &str) -> button::Button {
+    let mut btn = button::Button::default().with_label(caption);
+    btn.set_color(enums::Color::from_rgb(225, 225, 225));
+    btn
 }

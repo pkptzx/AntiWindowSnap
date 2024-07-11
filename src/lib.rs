@@ -6,7 +6,7 @@ use std::{
 use windows::{
     core::s,
     Win32::{
-        Foundation::{CloseHandle, GetLastError, FARPROC, HMODULE, HWND},
+        Foundation::{CloseHandle, GetLastError, BOOL, FARPROC, HMODULE, HWND},
         System::{
             Diagnostics::{
                 Debug::WriteProcessMemory,
@@ -21,8 +21,7 @@ use windows::{
                 PAGE_EXECUTE_READWRITE,
             },
             Threading::{
-                CreateRemoteThread, OpenProcess, WaitForSingleObject, INFINITE,
-                LPTHREAD_START_ROUTINE, PROCESS_ALL_ACCESS,
+                CreateRemoteThread, IsWow64Process, OpenProcess, WaitForSingleObject, INFINITE, LPTHREAD_START_ROUTINE, PROCESS_ALL_ACCESS
             },
         },
         UI::WindowsAndMessaging::{
@@ -41,6 +40,19 @@ pub fn anti_window(hwnd: u64, hide: bool) -> bool {
         let pid_ptr = Some(&mut pid as *mut u32);
 
         let _tid = GetWindowThreadProcessId(HWND(hwnd as *mut c_void), pid_ptr);
+
+        let process_handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid).unwrap();
+
+        let is_wow64 = &mut BOOL::default();
+        if IsWow64Process(process_handle,is_wow64).is_err() {
+                println!("IsWow64Process error!!!");
+                return false;
+        }
+        if is_wow64.as_bool() {
+            // println!("暂不支持设置32位应用");
+                return false;
+        }
+
 
         let mod_info = get_mod_info(pid, "User32.dll").unwrap();
 
@@ -67,7 +79,7 @@ pub fn anti_window(hwnd: u64, hide: bool) -> bool {
         shellcode.splice(43..43 + address_bytes.len(), address_bytes.iter().cloned());
         // println!("pat_bytes: {:02X?}", shellcode);
 
-        let process_handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid).unwrap();
+        
         let address = VirtualAllocEx(
             process_handle,
             None,
@@ -109,7 +121,7 @@ pub fn anti_window(hwnd: u64, hide: bool) -> bool {
         CloseHandle(t_handle).unwrap();
         CloseHandle(process_handle).unwrap();
     }
-    return false;
+    return true;
 }
 pub fn get_mod_info(
     pid: u32,
