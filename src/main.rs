@@ -260,8 +260,10 @@ unsafe extern "system" fn win_event_hook_callback(
                 if CONFIG_WINDOW_TITLES.contains(&title) {
                     if anti_window(hwnd, true) {
                         println!("************************已经设置窗口防截屏:{}", title);
+                        set_tip(format!("已经设置窗口防截屏:{}", title));
                     } else {
                         println!("设置窗口防截屏失败:{}", title);
+                        set_tip(format!("设置窗口防截屏失败:{}", title));
                     }
                 }
                 let mut val = WINDOW_CACHE.get_mut(&hwnd).unwrap();
@@ -289,6 +291,7 @@ unsafe extern "system" fn win_event_hook_callback(
                 if CONFIG_WINDOW_TITLES.contains(&title) {
                     if anti_window(hwnd, true) {
                         println!("************************已经设置窗口防截屏:{}", title);
+                        set_tip(format!("已经设置窗口防截屏:{}", title));
                     } else {
                         println!("设置窗口防截屏失败:{}", title);
                     }
@@ -306,8 +309,10 @@ unsafe extern "system" fn win_event_hook_callback(
                     if CONFIG_WINDOW_TITLES.contains(&title) {
                         if anti_window(hwnd, true) {
                             println!("************************已经设置窗口防截屏:{}", title);
+                            set_tip(format!("已经设置窗口防截屏:{}", title));
                         } else {
                             println!("设置窗口防截屏失败:{}", title);
+                            set_tip(format!("设置窗口防截屏失败:{}", title));
                         }
                         val.1 = STATE::Completed;
                     } else {
@@ -370,7 +375,7 @@ unsafe extern "system" fn enum_window_callback(
                 set_tip(format!("已经设置窗口防截屏:{}", title));
             } else {
                 println!("设置窗口防截屏失败:{}", title);
-                set_tip(format!("32位应用暂时不支持:{}", title));
+                set_tip(format!("设置窗口防截屏失败:{}", title));
             }
         }
         let mut val = WINDOW_CACHE.get_mut(&hwnd).unwrap();
