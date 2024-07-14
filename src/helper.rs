@@ -16,6 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WINDOWINFO,
 };
 
+#[allow(dead_code)]
 #[derive(Default, Debug)]
 pub struct WindowInfo {
     pub hwnd: u64,

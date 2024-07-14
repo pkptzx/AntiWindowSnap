@@ -8,29 +8,31 @@ use std::{
 
 use anti_window_snap::anti_window;
 use dashmap::DashMap;
-use fltk::{app::Scheme, enums::Align};
 use fltk::enums::{Color, Event};
 use fltk::image::PngImage;
 use fltk::input::Input;
 use fltk::{app, enums, prelude::*, window::Window};
+use fltk::{app::Scheme, enums::Align};
 use fltk::{button, dialog, frame, group, input, text};
 use once_cell::sync::Lazy;
 use windows::{
     core::w,
     Win32::{
-        Foundation::{BOOL, COLORREF, HWND, POINT},
+        Foundation::{BOOL, COLORREF, HWND, POINT, RECT},
         Graphics::Gdi::{
-            CreatePen, DeleteObject, GetStockObject, GetWindowDC, Rectangle, ReleaseDC,
-            SelectObject, SetROP2, NULL_BRUSH, PS_INSIDEFRAME, R2_NOT,
+            ClientToScreen, CombineRgn, CreateRectRgn, CreateRectRgnIndirect, CreateSolidBrush, FillRgn, GetDC, GetWindowDC, InflateRect, InvertRect,
+            OffsetRect, RedrawWindow, ReleaseDC, SetRect, RDW_FRAME, RDW_INTERNALPAINT, RDW_INVALIDATE,
+            RDW_UPDATENOW, RGN_DIFF,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
             WindowsAndMessaging::{
-                EnumWindows, GetParent, GetPhysicalCursorPos, GetWindowLongPtrW, GetWindowTextW,
-                LoadCursorW, SetCursor, WindowFromPhysicalPoint, CHILDID_SELF, EVENT_OBJECT_CREATE,
-                EVENT_OBJECT_NAMECHANGE, GWL_STYLE, OBJID_WINDOW, WINDOW_STYLE,
-                WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNTHREAD, WS_CHILD,
+                EnumWindows, GetClientRect, GetParent, GetPhysicalCursorPos, GetWindowLongPtrW,
+                GetWindowRect, GetWindowTextW, LoadCursorW, SetCursor, WindowFromPhysicalPoint,
+                CHILDID_SELF, EVENT_OBJECT_CREATE, EVENT_OBJECT_NAMECHANGE, GWL_STYLE,
+                OBJID_WINDOW, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNTHREAD,
+                WS_CHILD,
             },
         },
     },
@@ -390,20 +392,16 @@ fn do_allwindow() {
         EnumWindows(Some(enum_window_callback), lparam).unwrap();
     }
 }
-fn set_tip(txt: String){
-    let mut tip = unsafe {LABELS_CACHE.get_mut("tips").unwrap()};
-            let tip_lab = tip.label();
-            let lines:Vec<&str> = tip_lab.split("\n").collect();
-            let last_line = lines.last().unwrap();
-            let last_line = if last_line.is_empty() {
-                ""
-            }else{
-                last_line
-            };
-            let tips = format!("{}\n{}", last_line, txt);
-            tip.set_label(tips.as_str());
-            tip.redraw_label();
-            tip.parent().unwrap().redraw();
+fn set_tip(txt: String) {
+    let mut tip = unsafe { LABELS_CACHE.get_mut("tips").unwrap() };
+    let tip_lab = tip.label();
+    let lines: Vec<&str> = tip_lab.split("\n").collect();
+    let last_line = lines.last().unwrap();
+    let last_line = if last_line.is_empty() { "" } else { last_line };
+    let tips = format!("{}\n{}", last_line, txt);
+    tip.set_label(tips.as_str());
+    tip.redraw_label();
+    tip.parent().unwrap().redraw();
 }
 fn right_panel(parent: &mut group::Flex) {
     // frame::Frame::default();
@@ -416,141 +414,164 @@ fn right_panel(parent: &mut group::Flex) {
         let mut img = frame::Frame::default().with_size(42, 42);
         // img.set_frame(FrameType::EngravedBox);
 
-        let mut image = PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
-        image.scale(42, 42, true, true);
+        let image = PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
+        println!("image: {} {}", image.width(), image.height());
+        // image.scale(42, 42, true, false);
 
         img.set_image(Some(image));
-        img.handle(|me, event| match event {
-            Event::Push => {
-                let mut image =
-                    PngImage::from_data(&helper::load_icon_to_png("IDI_2").unwrap()).unwrap();
-                image.scale(42, 42, true, true);
-                me.set_image(Some(image));
-                me.redraw();
-                unsafe {
-                    let h_module = GetModuleHandleW(None).unwrap();
-                    let hcursor = LoadCursorW(h_module, w!("IDC_C_CURSOR")).unwrap();
-                    // println!("hcursor: {:?}", hcursor);
-                    SetCursor(hcursor);
-                }
-                true
-            }
-            Event::Released => {
-                let mut image =
-                    PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
-                image.scale(42, 42, true, true);
-                me.set_image(Some(image));
-                me.redraw();
-                true
-            }
-            Event::Drag => {
-                unsafe {
-                    let mut point2 = POINT::default();
-                    GetPhysicalCursorPos(&mut point2).unwrap();
-                    // println!("GetPhysicalCursorPos: {:?}", point2);
-
-                    let hwnd = WindowFromPhysicalPoint(point2);
-                    // println!("hwnd: {:?}", hwnd);
-                    if !hwnd.is_invalid() {
-                        let window_info = helper::get_window_info(hwnd.0 as _);
-                        // println!("hwnd: {:?} window_info: {:?}", hwnd, window_info);
-                        let hdc = GetWindowDC(hwnd);
-                        SetROP2(hdc, R2_NOT); // 返回0失败
-                        let pen = CreatePen(PS_INSIDEFRAME, 3, COLORREF(0x00000000));
-                        let h_old_pen = SelectObject(hdc, pen);
-                        let h_old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                        let width = window_info.rect.right - window_info.rect.left;
-                        let height = window_info.rect.bottom - window_info.rect.top;
-                        Rectangle(hdc, 0, 0, width, height).as_bool();
-                        SelectObject(hdc, h_old_brush);
-                        SelectObject(hdc, h_old_pen);
-                        ReleaseDC(hwnd, hdc);
-                        DeleteObject(pen).as_bool();
-                        let group = me.parent().unwrap().parent().unwrap();
-                        let mut win_title: Input = group
-                            .child(1)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_title.set_value(&window_info.text);
-
-                        let mut win_hwnd: Input = group
-                            .child(2)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_hwnd.set_value(&window_info.hwnd.to_string());
-
-                        let mut win_class_name: Input = group
-                            .child(3)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_class_name.set_value(&window_info.class_name);
-
-                        let mut win_style: Input = group
-                            .child(4)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_style.set_value(&window_info.style.to_string());
-
-                        let mut win_exstyle: Input = group
-                            .child(5)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_exstyle.set_value(&window_info.ex_style.to_string());
-
-                        let mut win_parent_title: Input = group
-                            .child(6)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_parent_title.set_value(&window_info.parent_text);
-
-                        let mut win_parent_hwnd: Input = group
-                            .child(7)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_parent_hwnd.set_value(&window_info.parent_hwnd.to_string());
-
-                        let mut win_parent_class_name: Input = group
-                            .child(8)
-                            .unwrap()
-                            .as_group()
-                            .unwrap()
-                            .child(1)
-                            .unwrap()
-                            .into_widget();
-                        win_parent_class_name.set_value(&window_info.parent_class_name);
+        img.handle({
+            let mut last_hwnd = 0u64;
+            move |me, event| match event {
+                Event::Push => {
+                    last_hwnd = 0;
+                    let image =
+                        PngImage::from_data(&helper::load_icon_to_png("IDI_2").unwrap()).unwrap();
+                    // image.scale(42, 42, true, true);
+                    me.set_image(Some(image));
+                    me.redraw();
+                    unsafe {
+                        let h_module = GetModuleHandleW(None).unwrap();
+                        let hcursor = LoadCursorW(h_module, w!("IDC_C_CURSOR")).unwrap();
+                        // println!("hcursor: {:?}", hcursor);
+                        SetCursor(hcursor);
                     }
+                    true
                 }
-                true
+                Event::Released => {
+                    if last_hwnd != 0 {
+                        // highlight_border(HWND(last_hwnd as _),false);
+                        invert_window(HWND(last_hwnd as _), false);
+                    }
+                    let image =
+                        PngImage::from_data(&helper::load_icon_to_png("IDI_1").unwrap()).unwrap();
+                    // image.scale(42, 42, true, true);
+                    me.set_image(Some(image));
+                    me.redraw();
+                    true
+                }
+                Event::Drag => {
+                    unsafe {
+                        let mut point2 = POINT::default();
+                        GetPhysicalCursorPos(&mut point2).unwrap();
+                        // println!("GetPhysicalCursorPos: {:?}", point2);
+
+                        let hwnd = WindowFromPhysicalPoint(point2);
+                        // println!("hwnd: {:?}", hwnd);
+                        if !hwnd.is_invalid() {
+                            let window_info = helper::get_window_info(hwnd.0 as _);
+                            // println!("hwnd: {:?} window_info: {:?}", hwnd, window_info);
+                            // let hdc = GetWindowDC(hwnd);
+                            // let oldRop2 = SetROP2(hdc, windows::Win32::Graphics::Gdi::R2_NOTXORPEN); // 返回0失败 R2_NOT R2_MASKPEN R2_NOTXORPEN
+                            // let pen = CreatePen(PS_INSIDEFRAME, 3, COLORREF(0x000000FF));// red 0x000000FF
+                            // let h_old_pen = SelectObject(hdc, pen);
+                            // let h_old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                            // let width = window_info.rect.right - window_info.rect.left;
+                            // let height = window_info.rect.bottom - window_info.rect.top;
+                            // Rectangle(hdc, 0, 0, width, height).as_bool();
+
+                            // SetROP2(hdc, windows::Win32::Graphics::Gdi::R2_MODE(oldRop2));
+
+                            // SelectObject(hdc, h_old_brush);
+                            // SelectObject(hdc, h_old_pen);
+                            // ReleaseDC(hwnd, hdc);
+                            // DeleteObject(pen).as_bool();
+                            if last_hwnd != hwnd.0 as _ {
+                                if last_hwnd != 0 {
+                                    // highlight_border(HWND(last_hwnd as _),false);
+                                    invert_window(HWND(last_hwnd as _), false);
+                                }
+                                // highlight_border(hwnd,true);
+                                invert_window(hwnd, false);
+                            }
+
+                            let group = me.parent().unwrap().parent().unwrap();
+                            let mut win_title: Input = group
+                                .child(1)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_title.set_value(&window_info.text);
+
+                            let mut win_hwnd: Input = group
+                                .child(2)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_hwnd.set_value(&window_info.hwnd.to_string());
+
+                            let mut win_class_name: Input = group
+                                .child(3)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_class_name.set_value(&window_info.class_name);
+
+                            let mut win_style: Input = group
+                                .child(4)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_style.set_value(&window_info.style.to_string());
+
+                            let mut win_exstyle: Input = group
+                                .child(5)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_exstyle.set_value(&window_info.ex_style.to_string());
+
+                            let mut win_parent_title: Input = group
+                                .child(6)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_parent_title.set_value(&window_info.parent_text);
+
+                            let mut win_parent_hwnd: Input = group
+                                .child(7)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_parent_hwnd.set_value(&window_info.parent_hwnd.to_string());
+
+                            let mut win_parent_class_name: Input = group
+                                .child(8)
+                                .unwrap()
+                                .as_group()
+                                .unwrap()
+                                .child(1)
+                                .unwrap()
+                                .into_widget();
+                            win_parent_class_name.set_value(&window_info.parent_class_name);
+
+                            last_hwnd = hwnd.0 as _;
+                        }
+                    }
+                    true
+                }
+                _ => false,
             }
-            _ => false,
         });
         sqq.fixed(&img, 43);
         sqq.end();
@@ -637,7 +658,7 @@ fn right_panel(parent: &mut group::Flex) {
         frame::Frame::default()
             .with_label("父窗口类名:")
             .with_align(enums::Align::Inside | enums::Align::Right);
-        
+
         let mut inp_parent_win_class_name = input::Input::default();
         inp_parent_win_class_name.set_readonly(true);
 
@@ -681,4 +702,162 @@ fn create_button(caption: &str) -> button::Button {
     let mut btn = button::Button::default().with_label(caption);
     btn.set_color(enums::Color::from_rgb(225, 225, 225));
     btn
+}
+
+//from https://github.com/zodiacon/WinSpy/blob/master/WinSpy/WindowHelper.cpp#L101
+pub fn highlight_border(hwnd: HWND, highlight: bool) {
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+
+    unsafe {
+        GetWindowRect(hwnd, &mut rc).unwrap();
+        // rc.OffsetRect(-rc.left, -rc.top); // 偏移
+        OffsetRect(&mut rc, -rc.left, -rc.top).unwrap();
+        // rc.InflateRect(2, 2); //增大 CRect 的宽度和高度。
+        InflateRect(&mut rc, 2, 2).unwrap();
+    }
+    let rgn1 = unsafe { CreateRectRgnIndirect(&rc) };
+    unsafe {
+        // rc.DeflateRect(5, 5); //减小 CRect 的宽度和高度。
+        InflateRect(&mut rc, -5, -5).unwrap();
+    }
+    let rgn2 = unsafe { CreateRectRgnIndirect(&rc) };
+
+    let rgn = unsafe { CreateRectRgn(0, 0, 1, 1) };
+    unsafe { CombineRgn(rgn, rgn1, rgn2, RGN_DIFF) }; // RGN_DIFF = 2 RGN_OR(2) RGN_DIFF(4)
+
+    if !highlight {
+        unsafe {
+            RedrawWindow(
+                hwnd,
+                None,
+                rgn,
+                RDW_INTERNALPAINT | RDW_INVALIDATE | RDW_UPDATENOW | RDW_FRAME,
+            )
+            .as_bool()
+        };
+        return;
+    }
+
+    let dc = unsafe { GetDC(hwnd) };
+    let brush = unsafe { CreateSolidBrush(rgb(255, 0, 0)) };
+    let _result = unsafe { FillRgn(dc, rgn, brush).as_bool() };
+}
+
+fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
+    let color: u32 = (b as u32) << 16 | (g as u32) << 8 | r as u32;
+    COLORREF(color)
+}
+
+// from https://github.com/strobejb/winspy/blob/master/src/FindTool.c#L91
+fn invert_window(hwnd: HWND, f_show_hidden: bool) {
+    let mut hwnd = hwnd;
+    let mut rect = RECT::default();
+    let mut rect2 = RECT::default();
+    let mut rectc = RECT::default();
+
+    let mut border = 3; //INVERT_BORDER
+
+    if hwnd.is_invalid() {
+        return;
+    }
+
+    //window rectangle (screen coords)
+    unsafe {
+        GetWindowRect(hwnd, &mut rect).unwrap();
+
+        //client rectangle (screen coords)
+        GetClientRect(hwnd, &mut rectc).unwrap();
+        let mut point: POINT = POINT {
+            x: rectc.left,
+            y: rectc.top,
+        };
+        ClientToScreen(hwnd, &mut point).as_bool();
+        rectc.left = point.x;
+        rectc.top = point.y;
+
+        let mut point: POINT = POINT {
+            x: rectc.right,
+            y: rectc.bottom,
+        };
+        ClientToScreen(hwnd, &mut point).as_bool();
+        rectc.right = point.x;
+        rectc.bottom = point.y;
+        //MapWindowPoints(hwnd, 0, (POINT *)&rectc, 2);
+
+        let x1 = rect.left;
+        let y1 = rect.top;
+        OffsetRect(&mut rect, -x1, -y1).as_bool();
+        OffsetRect(&mut rectc, -x1, -y1).as_bool();
+
+        if rect.bottom - border * 2 < 0 {
+            border = 1;
+        }
+
+        if rect.right - border * 2 < 0 {
+            border = 1;
+        }
+
+        if f_show_hidden == true {
+            hwnd.0 = 0 as _;
+        }
+
+        let hdc = GetWindowDC(hwnd);
+
+        if hdc.is_invalid() {
+            return;
+        }
+
+        //top edge
+        //border = rectc.top-rect.top;
+        SetRect(&mut rect2, 0, 0, rect.right, border).as_bool();
+        if f_show_hidden == true {
+            OffsetRect(&mut rect2, x1, y1).as_bool();
+        }
+        InvertRect(hdc, &rect2).as_bool();
+
+        //left edge
+        //border = rectc.left-rect.left;
+        SetRect(&mut rect2, 0, border, border, rect.bottom).as_bool();
+        if f_show_hidden == true {
+            OffsetRect(&mut rect2, x1, y1).as_bool();
+        }
+        InvertRect(hdc, &rect2).as_bool();
+
+        //right edge
+        //border = rect.right-rectc.right;
+        SetRect(
+            &mut rect2,
+            border,
+            rect.bottom - border,
+            rect.right,
+            rect.bottom,
+        )
+        .as_bool();
+        if f_show_hidden == true {
+            OffsetRect(&mut rect2, x1, y1).as_bool();
+        }
+        InvertRect(hdc, &rect2).as_bool();
+
+        //bottom edge
+        //border = rect.bottom-rectc.bottom;
+        SetRect(
+            &mut rect2,
+            rect.right - border,
+            border,
+            rect.right,
+            rect.bottom - border,
+        )
+        .as_bool();
+        if f_show_hidden == true {
+            OffsetRect(&mut rect2, x1, y1).as_bool();
+        }
+        InvertRect(hdc, &rect2).as_bool();
+
+        ReleaseDC(hwnd, hdc);
+    };
 }
